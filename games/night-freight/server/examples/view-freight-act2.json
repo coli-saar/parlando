@@ -1,0 +1,1149 @@
+{
+  "act": 2,
+  "briefing": {
+    "announcement": null,
+    "cars": [
+      {
+        "at": {
+          "station": "bath",
+          "type": "yard"
+        },
+        "id": 1,
+        "kind": "boxcar",
+        "load": null
+      },
+      {
+        "at": {
+          "station": "bath",
+          "type": "yard"
+        },
+        "id": 2,
+        "kind": "boxcar",
+        "load": null
+      },
+      {
+        "at": {
+          "engine": "E2",
+          "type": "coupled"
+        },
+        "id": 3,
+        "kind": "boxcar",
+        "load": "oranges"
+      },
+      {
+        "at": {
+          "engine": "E1",
+          "type": "coupled"
+        },
+        "id": 4,
+        "kind": "boxcar",
+        "load": "oranges"
+      },
+      {
+        "at": {
+          "station": "dansville",
+          "type": "yard"
+        },
+        "id": 5,
+        "kind": "boxcar",
+        "load": null
+      },
+      {
+        "at": {
+          "engine": "E2",
+          "type": "coupled"
+        },
+        "id": 6,
+        "kind": "tanker",
+        "load": null
+      }
+    ],
+    "deliver_hours": 0,
+    "factories": [
+      {
+        "hours": 1,
+        "input": "oranges",
+        "output": "juice",
+        "station": "elmira"
+      }
+    ],
+    "load_hours": 1,
+    "orders": [
+      {
+        "commodity": "oranges",
+        "count": 1,
+        "deadline": 7,
+        "delivered": 0,
+        "delivered_at": null,
+        "id": "O1",
+        "to": "bath"
+      },
+      {
+        "commodity": "juice",
+        "count": 1,
+        "deadline": 14,
+        "delivered": 0,
+        "delivered_at": null,
+        "id": "O2",
+        "to": "avon"
+      }
+    ],
+    "stock": [
+      {
+        "commodities": [
+          "bananas"
+        ],
+        "station": "avon"
+      },
+      {
+        "commodities": [
+          "oranges"
+        ],
+        "station": "corning"
+      }
+    ],
+    "type": "freight"
+  },
+  "continue": {
+    "me": false,
+    "partner": false
+  },
+  "last_run": {
+    "act": 1,
+    "actual": {
+      "end_hour": 7,
+      "events": [
+        {
+          "hour": 0,
+          "kind": {
+            "arrive_hour": 3,
+            "engine": "E1",
+            "from": "avon",
+            "stop": 0,
+            "to": "dansville",
+            "type": "depart"
+          }
+        },
+        {
+          "hour": 0,
+          "kind": {
+            "arrive_hour": 2,
+            "engine": "E2",
+            "from": "elmira",
+            "stop": 0,
+            "to": "corning",
+            "type": "depart"
+          }
+        },
+        {
+          "hour": 2,
+          "kind": {
+            "engine": "E2",
+            "station": "corning",
+            "stop": 1,
+            "type": "arrive"
+          }
+        },
+        {
+          "hour": 2,
+          "kind": {
+            "cars": [
+              6
+            ],
+            "engine": "E2",
+            "index": 0,
+            "op": {
+              "count": 1,
+              "kind": "tanker",
+              "load": {
+                "type": "any"
+              },
+              "type": "couple"
+            },
+            "station": "corning",
+            "stop": 1,
+            "type": "op_done"
+          }
+        },
+        {
+          "hour": 3,
+          "kind": {
+            "engine": "E1",
+            "station": "dansville",
+            "stop": 1,
+            "type": "arrive"
+          }
+        },
+        {
+          "hour": 3,
+          "kind": {
+            "cars": [
+              3,
+              4
+            ],
+            "engine": "E1",
+            "index": 0,
+            "op": {
+              "count": 2,
+              "kind": "boxcar",
+              "load": {
+                "type": "any"
+              },
+              "type": "couple"
+            },
+            "station": "dansville",
+            "stop": 1,
+            "type": "op_done"
+          }
+        },
+        {
+          "hour": 3,
+          "kind": {
+            "arrive_hour": 4,
+            "engine": "E1",
+            "from": "dansville",
+            "stop": 1,
+            "to": "corning",
+            "type": "depart"
+          }
+        },
+        {
+          "hour": 4,
+          "kind": {
+            "engine": "E1",
+            "station": "corning",
+            "stop": 2,
+            "type": "arrive"
+          }
+        },
+        {
+          "hour": 4,
+          "kind": {
+            "engine": "E1",
+            "finish_hour": 5,
+            "index": 0,
+            "op": {
+              "commodity": "oranges",
+              "count": 2,
+              "type": "load"
+            },
+            "station": "corning",
+            "stop": 2,
+            "type": "op_started"
+          }
+        },
+        {
+          "hour": 5,
+          "kind": {
+            "cars": [
+              3,
+              4
+            ],
+            "engine": "E1",
+            "index": 0,
+            "op": {
+              "commodity": "oranges",
+              "count": 2,
+              "type": "load"
+            },
+            "station": "corning",
+            "stop": 2,
+            "type": "op_done"
+          }
+        },
+        {
+          "hour": 5,
+          "kind": {
+            "cars": [
+              3
+            ],
+            "engine": "E1",
+            "index": 1,
+            "op": {
+              "count": 1,
+              "kind": "boxcar",
+              "load": {
+                "commodity": "oranges",
+                "type": "loaded"
+              },
+              "type": "uncouple"
+            },
+            "station": "corning",
+            "stop": 2,
+            "type": "op_done"
+          }
+        },
+        {
+          "hour": 5,
+          "kind": {
+            "cars": [
+              3
+            ],
+            "engine": "E2",
+            "index": 1,
+            "op": {
+              "count": 1,
+              "kind": "boxcar",
+              "load": {
+                "commodity": "oranges",
+                "type": "loaded"
+              },
+              "type": "couple"
+            },
+            "station": "corning",
+            "stop": 1,
+            "type": "op_done"
+          }
+        },
+        {
+          "hour": 5,
+          "kind": {
+            "arrive_hour": 7,
+            "engine": "E1",
+            "from": "corning",
+            "stop": 2,
+            "to": "bath",
+            "type": "depart"
+          }
+        },
+        {
+          "hour": 5,
+          "kind": {
+            "arrive_hour": 7,
+            "engine": "E2",
+            "from": "corning",
+            "stop": 1,
+            "to": "elmira",
+            "type": "depart"
+          }
+        },
+        {
+          "hour": 7,
+          "kind": {
+            "engine": "E1",
+            "station": "bath",
+            "stop": 3,
+            "type": "arrive"
+          }
+        },
+        {
+          "hour": 7,
+          "kind": {
+            "engine": "E2",
+            "station": "elmira",
+            "stop": 2,
+            "type": "arrive"
+          }
+        },
+        {
+          "hour": 7,
+          "kind": {
+            "type": "disrupted",
+            "what": {
+              "engine": "E2",
+              "station": "elmira",
+              "type": "engine_failure"
+            }
+          }
+        }
+      ],
+      "initial": {
+        "cars": [
+          {
+            "at": {
+              "station": "bath",
+              "type": "yard"
+            },
+            "id": 1,
+            "kind": "boxcar",
+            "load": null
+          },
+          {
+            "at": {
+              "station": "bath",
+              "type": "yard"
+            },
+            "id": 2,
+            "kind": "boxcar",
+            "load": null
+          },
+          {
+            "at": {
+              "station": "dansville",
+              "type": "yard"
+            },
+            "id": 3,
+            "kind": "boxcar",
+            "load": null
+          },
+          {
+            "at": {
+              "station": "dansville",
+              "type": "yard"
+            },
+            "id": 4,
+            "kind": "boxcar",
+            "load": null
+          },
+          {
+            "at": {
+              "station": "dansville",
+              "type": "yard"
+            },
+            "id": 5,
+            "kind": "boxcar",
+            "load": null
+          },
+          {
+            "at": {
+              "station": "corning",
+              "type": "yard"
+            },
+            "id": 6,
+            "kind": "tanker",
+            "load": null
+          }
+        ],
+        "engines": [
+          {
+            "arrived_at": 0,
+            "available_from": 0,
+            "capacity": 3,
+            "failed": false,
+            "id": "E1",
+            "station": "avon"
+          },
+          {
+            "arrived_at": 0,
+            "available_from": 0,
+            "capacity": 3,
+            "failed": false,
+            "id": "E2",
+            "station": "elmira"
+          },
+          {
+            "arrived_at": 0,
+            "available_from": 0,
+            "capacity": 3,
+            "failed": false,
+            "id": "E3",
+            "station": "elmira"
+          }
+        ],
+        "hour": 0,
+        "orders": [
+          {
+            "commodity": "oranges",
+            "count": 1,
+            "deadline": 7,
+            "delivered": 0,
+            "delivered_at": null,
+            "id": "O1",
+            "to": "bath"
+          },
+          {
+            "commodity": "juice",
+            "count": 1,
+            "deadline": 14,
+            "delivered": 0,
+            "delivered_at": null,
+            "id": "O2",
+            "to": "avon"
+          }
+        ]
+      },
+      "orders": [
+        {
+          "commodity": "oranges",
+          "count": 1,
+          "deadline": 7,
+          "delivered": 0,
+          "delivered_at": null,
+          "id": "O1",
+          "met": false,
+          "to": "bath"
+        },
+        {
+          "commodity": "juice",
+          "count": 1,
+          "deadline": 14,
+          "delivered": 0,
+          "delivered_at": null,
+          "id": "O2",
+          "met": false,
+          "to": "avon"
+        }
+      ],
+      "success": false
+    },
+    "divergence": {
+      "actual": {
+        "hour": 5,
+        "kind": {
+          "cars": [
+            3
+          ],
+          "engine": "E2",
+          "index": 1,
+          "op": {
+            "count": 1,
+            "kind": "boxcar",
+            "load": {
+              "commodity": "oranges",
+              "type": "loaded"
+            },
+            "type": "couple"
+          },
+          "station": "corning",
+          "stop": 1,
+          "type": "op_done"
+        }
+      },
+      "engine": "E2",
+      "expected": {
+        "hour": 2,
+        "kind": {
+          "engine": "E2",
+          "index": 1,
+          "op": {
+            "count": 1,
+            "kind": "boxcar",
+            "load": {
+              "commodity": "oranges",
+              "type": "loaded"
+            },
+            "type": "couple"
+          },
+          "reason": {
+            "found": 0,
+            "kind": "boxcar",
+            "load": {
+              "commodity": "oranges",
+              "type": "loaded"
+            },
+            "type": "no_matching_cars_in_yard",
+            "wanted": 1,
+            "yard": []
+          },
+          "station": "corning",
+          "stop": 1,
+          "type": "op_abandoned"
+        }
+      },
+      "hour": 2
+    },
+    "expected": {
+      "end_hour": 7,
+      "events": [
+        {
+          "hour": 0,
+          "kind": {
+            "arrive_hour": 3,
+            "engine": "E1",
+            "from": "avon",
+            "stop": 0,
+            "to": "dansville",
+            "type": "depart"
+          }
+        },
+        {
+          "hour": 0,
+          "kind": {
+            "arrive_hour": 2,
+            "engine": "E2",
+            "from": "elmira",
+            "stop": 0,
+            "to": "corning",
+            "type": "depart"
+          }
+        },
+        {
+          "hour": 2,
+          "kind": {
+            "engine": "E2",
+            "station": "corning",
+            "stop": 1,
+            "type": "arrive"
+          }
+        },
+        {
+          "hour": 2,
+          "kind": {
+            "cars": [
+              6
+            ],
+            "engine": "E2",
+            "index": 0,
+            "op": {
+              "count": 1,
+              "kind": "tanker",
+              "load": {
+                "type": "any"
+              },
+              "type": "couple"
+            },
+            "station": "corning",
+            "stop": 1,
+            "type": "op_done"
+          }
+        },
+        {
+          "hour": 2,
+          "kind": {
+            "engine": "E2",
+            "index": 1,
+            "op": {
+              "count": 1,
+              "kind": "boxcar",
+              "load": {
+                "commodity": "oranges",
+                "type": "loaded"
+              },
+              "type": "couple"
+            },
+            "reason": {
+              "found": 0,
+              "kind": "boxcar",
+              "load": {
+                "commodity": "oranges",
+                "type": "loaded"
+              },
+              "type": "no_matching_cars_in_yard",
+              "wanted": 1,
+              "yard": []
+            },
+            "station": "corning",
+            "stop": 1,
+            "type": "op_abandoned"
+          }
+        },
+        {
+          "hour": 2,
+          "kind": {
+            "arrive_hour": 4,
+            "engine": "E2",
+            "from": "corning",
+            "stop": 1,
+            "to": "elmira",
+            "type": "depart"
+          }
+        },
+        {
+          "hour": 3,
+          "kind": {
+            "engine": "E1",
+            "station": "dansville",
+            "stop": 1,
+            "type": "arrive"
+          }
+        },
+        {
+          "hour": 3,
+          "kind": {
+            "cars": [
+              3,
+              4
+            ],
+            "engine": "E1",
+            "index": 0,
+            "op": {
+              "count": 2,
+              "kind": "boxcar",
+              "load": {
+                "type": "any"
+              },
+              "type": "couple"
+            },
+            "station": "dansville",
+            "stop": 1,
+            "type": "op_done"
+          }
+        },
+        {
+          "hour": 3,
+          "kind": {
+            "arrive_hour": 4,
+            "engine": "E1",
+            "from": "dansville",
+            "stop": 1,
+            "to": "corning",
+            "type": "depart"
+          }
+        },
+        {
+          "hour": 4,
+          "kind": {
+            "engine": "E1",
+            "station": "corning",
+            "stop": 2,
+            "type": "arrive"
+          }
+        },
+        {
+          "hour": 4,
+          "kind": {
+            "engine": "E2",
+            "station": "elmira",
+            "stop": 2,
+            "type": "arrive"
+          }
+        },
+        {
+          "hour": 4,
+          "kind": {
+            "engine": "E1",
+            "finish_hour": 5,
+            "index": 0,
+            "op": {
+              "commodity": "oranges",
+              "count": 2,
+              "type": "load"
+            },
+            "station": "corning",
+            "stop": 2,
+            "type": "op_started"
+          }
+        },
+        {
+          "hour": 4,
+          "kind": {
+            "engine": "E2",
+            "index": 0,
+            "op": {
+              "count": 1,
+              "type": "process"
+            },
+            "reason": {
+              "found": 0,
+              "load": "oranges",
+              "type": "no_input_cars",
+              "wanted": 1
+            },
+            "station": "elmira",
+            "stop": 2,
+            "type": "op_abandoned"
+          }
+        },
+        {
+          "hour": 4,
+          "kind": {
+            "arrive_hour": 6,
+            "engine": "E2",
+            "from": "elmira",
+            "stop": 2,
+            "to": "corning",
+            "type": "depart"
+          }
+        },
+        {
+          "hour": 5,
+          "kind": {
+            "cars": [
+              3,
+              4
+            ],
+            "engine": "E1",
+            "index": 0,
+            "op": {
+              "commodity": "oranges",
+              "count": 2,
+              "type": "load"
+            },
+            "station": "corning",
+            "stop": 2,
+            "type": "op_done"
+          }
+        },
+        {
+          "hour": 5,
+          "kind": {
+            "cars": [
+              3
+            ],
+            "engine": "E1",
+            "index": 1,
+            "op": {
+              "count": 1,
+              "kind": "boxcar",
+              "load": {
+                "commodity": "oranges",
+                "type": "loaded"
+              },
+              "type": "uncouple"
+            },
+            "station": "corning",
+            "stop": 2,
+            "type": "op_done"
+          }
+        },
+        {
+          "hour": 5,
+          "kind": {
+            "arrive_hour": 7,
+            "engine": "E1",
+            "from": "corning",
+            "stop": 2,
+            "to": "bath",
+            "type": "depart"
+          }
+        },
+        {
+          "hour": 6,
+          "kind": {
+            "engine": "E2",
+            "station": "corning",
+            "stop": 3,
+            "type": "arrive"
+          }
+        },
+        {
+          "hour": 6,
+          "kind": {
+            "arrive_hour": 7,
+            "engine": "E2",
+            "from": "corning",
+            "stop": 3,
+            "to": "dansville",
+            "type": "depart"
+          }
+        },
+        {
+          "hour": 7,
+          "kind": {
+            "engine": "E1",
+            "station": "bath",
+            "stop": 3,
+            "type": "arrive"
+          }
+        },
+        {
+          "hour": 7,
+          "kind": {
+            "engine": "E2",
+            "station": "dansville",
+            "stop": 4,
+            "type": "arrive"
+          }
+        }
+      ],
+      "initial": {
+        "cars": [
+          {
+            "at": {
+              "station": "bath",
+              "type": "yard"
+            },
+            "id": 1,
+            "kind": "boxcar",
+            "load": null
+          },
+          {
+            "at": {
+              "station": "bath",
+              "type": "yard"
+            },
+            "id": 2,
+            "kind": "boxcar",
+            "load": null
+          },
+          {
+            "at": {
+              "station": "dansville",
+              "type": "yard"
+            },
+            "id": 3,
+            "kind": "boxcar",
+            "load": null
+          },
+          {
+            "at": {
+              "station": "dansville",
+              "type": "yard"
+            },
+            "id": 4,
+            "kind": "boxcar",
+            "load": null
+          },
+          {
+            "at": {
+              "station": "dansville",
+              "type": "yard"
+            },
+            "id": 5,
+            "kind": "boxcar",
+            "load": null
+          },
+          {
+            "at": {
+              "station": "corning",
+              "type": "yard"
+            },
+            "id": 6,
+            "kind": "tanker",
+            "load": null
+          }
+        ],
+        "engines": [
+          {
+            "arrived_at": 0,
+            "available_from": 0,
+            "capacity": 3,
+            "failed": false,
+            "id": "E1",
+            "station": "avon"
+          },
+          {
+            "arrived_at": 0,
+            "available_from": 0,
+            "capacity": 3,
+            "failed": false,
+            "id": "E2",
+            "station": "elmira"
+          },
+          {
+            "arrived_at": 0,
+            "available_from": 0,
+            "capacity": 3,
+            "failed": false,
+            "id": "E3",
+            "station": "elmira"
+          }
+        ],
+        "hour": 0,
+        "orders": [
+          {
+            "commodity": "oranges",
+            "count": 1,
+            "deadline": 7,
+            "delivered": 0,
+            "delivered_at": null,
+            "id": "O1",
+            "to": "bath"
+          },
+          {
+            "commodity": "juice",
+            "count": 1,
+            "deadline": 14,
+            "delivered": 0,
+            "delivered_at": null,
+            "id": "O2",
+            "to": "avon"
+          }
+        ]
+      },
+      "orders": [
+        {
+          "commodity": "oranges",
+          "count": 1,
+          "deadline": 7,
+          "delivered": 0,
+          "delivered_at": null,
+          "id": "O1",
+          "met": false,
+          "to": "bath"
+        },
+        {
+          "commodity": "juice",
+          "count": 1,
+          "deadline": 14,
+          "delivered": 0,
+          "delivered_at": null,
+          "id": "O2",
+          "met": false,
+          "to": "avon"
+        }
+      ],
+      "success": false
+    },
+    "interrupted_at": 7,
+    "number": 1,
+    "orders": [
+      {
+        "commodity": "oranges",
+        "count": 1,
+        "deadline": 7,
+        "delivered": 0,
+        "delivered_at": null,
+        "id": "O1",
+        "met": false,
+        "to": "bath"
+      },
+      {
+        "commodity": "juice",
+        "count": 1,
+        "deadline": 14,
+        "delivered": 0,
+        "delivered_at": null,
+        "id": "O2",
+        "met": false,
+        "to": "avon"
+      }
+    ],
+    "success": false
+  },
+  "map": {
+    "edges": [
+      {
+        "a": "avon",
+        "b": "dansville"
+      },
+      {
+        "a": "avon",
+        "b": "bath"
+      },
+      {
+        "a": "dansville",
+        "b": "corning"
+      },
+      {
+        "a": "bath",
+        "b": "corning"
+      },
+      {
+        "a": "corning",
+        "b": "elmira"
+      }
+    ],
+    "engines": [
+      {
+        "available_from": null,
+        "failed": false,
+        "id": "E1",
+        "station": "bath"
+      },
+      {
+        "available_from": null,
+        "failed": true,
+        "id": "E2",
+        "station": "elmira"
+      },
+      {
+        "available_from": null,
+        "failed": false,
+        "id": "E3",
+        "station": "elmira"
+      }
+    ],
+    "horizon": 24,
+    "start_hour": 7,
+    "stations": [
+      {
+        "factory": false,
+        "id": "avon",
+        "name": "Avon"
+      },
+      {
+        "factory": false,
+        "id": "bath",
+        "name": "Bath"
+      },
+      {
+        "factory": false,
+        "id": "corning",
+        "name": "Corning"
+      },
+      {
+        "factory": false,
+        "id": "dansville",
+        "name": "Dansville"
+      },
+      {
+        "factory": true,
+        "id": "elmira",
+        "name": "Elmira"
+      }
+    ]
+  },
+  "max_runs": 6,
+  "notes": {
+    "engines": {
+      "E1": [
+        {
+          "depart": {
+            "type": "immediately"
+          },
+          "heard_arrival": null,
+          "ops": [
+            {
+              "order": "O1",
+              "type": "deliver"
+            }
+          ],
+          "station": "bath"
+        }
+      ],
+      "E2": [
+        {
+          "depart": {
+            "hour": 8,
+            "type": "at"
+          },
+          "heard_arrival": null,
+          "ops": [
+            {
+              "count": 1,
+              "type": "process"
+            }
+          ],
+          "station": "elmira"
+        },
+        {
+          "depart": {
+            "type": "immediately"
+          },
+          "heard_arrival": null,
+          "ops": [],
+          "station": "corning"
+        },
+        {
+          "depart": {
+            "type": "immediately"
+          },
+          "heard_arrival": null,
+          "ops": [],
+          "station": "dansville"
+        },
+        {
+          "depart": {
+            "type": "immediately"
+          },
+          "heard_arrival": null,
+          "ops": [
+            {
+              "order": "O2",
+              "type": "deliver"
+            }
+          ],
+          "station": "avon"
+        }
+      ],
+      "E3": [
+        {
+          "depart": {
+            "type": "immediately"
+          },
+          "heard_arrival": null,
+          "ops": [],
+          "station": "elmira"
+        }
+      ]
+    }
+  },
+  "phase": "planning",
+  "ready": {
+    "me": false,
+    "partner": false
+  },
+  "replay_finished": {
+    "me": false,
+    "partner": false
+  },
+  "role": "freight",
+  "runs_used": 1,
+  "scenario_count": 1,
+  "scenario_id": "corning-juice",
+  "scenario_index": 0,
+  "scenario_summary": "Oranges to Bath by seven, juice to Avon by two in the afternoon.",
+  "scenario_title": "Corning juice",
+  "scores": []
+}

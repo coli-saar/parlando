@@ -1,0 +1,6 @@
+# The agent uses SDK helpers (e.g. `wire_value`) that are newer than the
+# published parlando-agent-sdk 0.7.0, so install the SDK from this checkout.
+# Paths are relative to this directory; run `pip install -r requirements.txt` here.
+../../../parlando-agent-sdk
+anthropic>=0.40
+pytest

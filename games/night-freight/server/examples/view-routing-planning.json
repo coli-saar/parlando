@@ -1,0 +1,148 @@
+{
+  "act": 1,
+  "briefing": {
+    "announcement": null,
+    "capacities": [
+      {
+        "capacity": 3,
+        "engine": "E1"
+      }
+    ],
+    "restrictions": [],
+    "travel_times": [
+      {
+        "a": "avon",
+        "b": "dansville",
+        "hours": 3
+      },
+      {
+        "a": "avon",
+        "b": "bath",
+        "hours": 4
+      },
+      {
+        "a": "dansville",
+        "b": "corning",
+        "hours": 1
+      },
+      {
+        "a": "bath",
+        "b": "corning",
+        "hours": 2
+      },
+      {
+        "a": "corning",
+        "b": "elmira",
+        "hours": 2
+      }
+    ],
+    "type": "routing"
+  },
+  "continue": {
+    "me": false,
+    "partner": false
+  },
+  "last_run": null,
+  "map": {
+    "edges": [
+      {
+        "a": "avon",
+        "b": "dansville"
+      },
+      {
+        "a": "avon",
+        "b": "bath"
+      },
+      {
+        "a": "dansville",
+        "b": "corning"
+      },
+      {
+        "a": "bath",
+        "b": "corning"
+      },
+      {
+        "a": "corning",
+        "b": "elmira"
+      }
+    ],
+    "engines": [
+      {
+        "available_from": 0,
+        "failed": false,
+        "id": "E1",
+        "station": "corning"
+      }
+    ],
+    "horizon": 24,
+    "start_hour": 0,
+    "stations": [
+      {
+        "factory": false,
+        "id": "avon",
+        "name": "Avon"
+      },
+      {
+        "factory": false,
+        "id": "bath",
+        "name": "Bath"
+      },
+      {
+        "factory": false,
+        "id": "corning",
+        "name": "Corning"
+      },
+      {
+        "factory": false,
+        "id": "dansville",
+        "name": "Dansville"
+      },
+      {
+        "factory": true,
+        "id": "elmira",
+        "name": "Elmira"
+      }
+    ]
+  },
+  "max_runs": 6,
+  "notes": {
+    "engines": {
+      "E1": [
+        {
+          "depart": {
+            "hour": 1,
+            "type": "at"
+          },
+          "heard_arrival": null,
+          "ops": [],
+          "station": "corning"
+        },
+        {
+          "depart": {
+            "type": "immediately"
+          },
+          "heard_arrival": 2,
+          "ops": [],
+          "station": "dansville"
+        }
+      ]
+    }
+  },
+  "phase": "planning",
+  "ready": {
+    "me": false,
+    "partner": true
+  },
+  "replay_finished": {
+    "me": false,
+    "partner": false
+  },
+  "role": "routing",
+  "runs_used": 0,
+  "scenario_count": 1,
+  "scenario_id": "tutorial",
+  "scenario_index": 0,
+  "scenario_summary": "One engine, one boxcar and one order. Load the oranges and take them to Dansville.",
+  "scenario_title": "Oranges for Dansville",
+  "scores": []
+}

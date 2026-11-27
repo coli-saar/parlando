@@ -1,0 +1,11 @@
+game: night-freight-v2
+id: night_freight.partner
+name: Night Freight scripted partner
+version: 1.0.1
+cargo_manifest: server/Cargo.toml
+features:
+- agent-component
+dependency:
+  source: dist/night-freight-v2-0.1.5.zip
+  version: 0.1.5
+  sha256: 16f856e3857353cf0bb2f0287fe04adb9be56d08eb82e6ce0aab29c9f961c008

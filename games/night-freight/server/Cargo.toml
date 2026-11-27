@@ -1,0 +1,19 @@
+[package]
+name = "parlando-night-freight"
+edition = "2021"
+license = "MIT"
+version = "0.1.5"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+parlando-game-sdk = { path = "../../../parlando-game-sdk" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+[features]
+# Builds the scripted partner policy instead of the game (see ../agent.yaml).
+agent-component = []

@@ -1,0 +1,11 @@
+{
+  "scores": [
+    {
+      "orders_met": 1,
+      "orders_total": 1,
+      "replanned": false,
+      "runs_used": 1,
+      "scenario": "tutorial"
+    }
+  ]
+}

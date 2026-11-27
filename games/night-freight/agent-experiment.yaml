@@ -1,0 +1,52 @@
+# Headless check of the scripted partner: two partners play the tutorial and
+# one scored scenario against each other. They cannot plan, so the runs fail;
+# the experiment verifies the phase loop (ready, replay, continue) completes
+# and that the game accepts every action.
+schema: parlando-agent-experiment/v1
+
+game:
+  id: night-freight-v2
+
+agents:
+  partner:
+    factory: night_freight.partner
+    settings:
+      readiness: immediately
+
+sessions:
+  scenarios:
+    - name: tutorial
+      config:
+        scenarios: [tutorial]
+        max_runs: 2
+      seeds: [1, 2]
+    - name: corning-juice
+      config:
+        scenarios: [corning-juice]
+        max_runs: 2
+      seeds: [3]
+  seats:
+    player_a: partner
+    player_b: partner
+  mirror_roles: false
+
+schedule:
+  kind: alternate_every_response
+  first: player_a
+
+limits:
+  callback_timeout_seconds: 5
+  shutdown_timeout_seconds: 2
+  session_timeout_seconds: 60
+  decisions: 200
+  accepted_actions: 60
+  messages: 100
+  rejected_actions: 3
+
+execution:
+  concurrency: 1
+  fail_fast: false
+
+output:
+  directory: results/partner-pairs
+  trace: decisions

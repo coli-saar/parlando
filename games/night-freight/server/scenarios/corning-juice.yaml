@@ -1,0 +1,153 @@
+# The classic scenario: oranges for Bath and a tanker of juice for Avon.
+# Traps: no boxcar at Corning (Freight sees it, Routing does not), and the
+# obvious detour via Bath is too slow (Routing sees it). Both deadlines are met
+# to the hour by the reference plan, so one boxcar must be loaded at Corning
+# and handed to the juice train there. Engines wait for their ops, so neither
+# the factory hour nor the loading hour needs a departure time; only the
+# hand-over and the route are the pair's decisions.
+id: corning-juice
+title: Corning juice
+summary: Oranges to Bath by seven, juice to Avon by two in the afternoon.
+start_hour: 0
+stations:
+  - { id: avon, name: Avon, stock: [bananas] }
+  - { id: bath, name: Bath }
+  - { id: corning, name: Corning, stock: [oranges] }
+  - { id: dansville, name: Dansville }
+  - { id: elmira, name: Elmira, factory: { input: oranges, output: juice, hours: 1 } }
+edges:
+  - { a: avon, b: dansville, hours: 3 }
+  - { a: avon, b: bath, hours: 4 }
+  - { a: dansville, b: corning, hours: 1 }
+  - { a: bath, b: corning, hours: 2 }
+  - { a: corning, b: elmira, hours: 2 }
+durations: { load: 1, deliver: 0 }
+engines:
+  - { id: E1, station: avon, capacity: 3 }
+  - { id: E2, station: elmira, capacity: 3 }
+  - { id: E3, station: elmira, capacity: 3 }
+cars:
+  - { id: 1, kind: boxcar, at: bath }
+  - { id: 2, kind: boxcar, at: bath }
+  - { id: 3, kind: boxcar, at: dansville }
+  - { id: 4, kind: boxcar, at: dansville }
+  - { id: 5, kind: boxcar, at: dansville }
+  - { id: 6, kind: tanker, at: corning }
+orders:
+  - { id: O1, commodity: oranges, count: 1, to: bath, deadline: 7 }
+  - { id: O2, commodity: juice, count: 1, to: avon, deadline: 14 }
+restrictions: []
+disruptions:
+  - id: e2-fails
+    hour: 7
+    effect: { kind: engine_failure, engine: E2 }
+    recovery:
+      engines:
+        E1:
+          - station: bath
+            ops:
+              - { type: deliver, order: O1 }
+        E2:
+          - station: elmira
+            ops:
+              - { type: uncouple, kind: tanker, count: 1 }
+              - { type: uncouple, kind: boxcar, load: { type: loaded, commodity: oranges }, count: 1 }
+        E3:
+          - station: elmira
+            depart: { type: at, hour: 8 }
+            ops:
+              - { type: couple, kind: tanker, count: 1 }
+              - { type: couple, kind: boxcar, load: { type: loaded, commodity: oranges }, count: 1 }
+              - { type: process, count: 1 }
+          - station: corning
+          - station: dansville
+          - station: avon
+            ops:
+              - { type: deliver, order: O2 }
+  - id: late-bananas
+    hour: 5
+    effect:
+      kind: late_order
+      order: { id: O3, commodity: bananas, count: 1, to: corning, deadline: 18 }
+    recovery:
+      engines:
+        E1:
+          - station: corning
+            depart: { type: at, hour: 5 }
+            ops:
+              - { type: uncouple, kind: boxcar, load: { type: loaded, commodity: oranges }, count: 1 }
+          - station: bath
+            ops:
+              - { type: deliver, order: O1 }
+          - station: avon
+            depart: { type: at, hour: 14 }
+            ops:
+              - { type: load, commodity: bananas, count: 1 }
+          - station: dansville
+          - station: corning
+            ops:
+              - { type: deliver, order: O3 }
+        E2:
+          - station: corning
+            depart: { type: after, engine: E1, plus_hours: 1 }
+            ops:
+              - { type: couple, kind: boxcar, load: { type: loaded, commodity: oranges }, count: 1 }
+          - station: elmira
+            depart: { type: at, hour: 8 }
+            ops:
+              - { type: process, count: 1 }
+          - station: corning
+          - station: dansville
+          - station: avon
+            ops:
+              - { type: deliver, order: O2 }
+        E3:
+          - station: elmira
+naive_plan:
+  engines:
+    E2:
+      - station: elmira
+      - station: corning
+      - station: bath
+        ops:
+          - { type: couple, kind: boxcar, count: 1 }
+      - station: corning
+        depart: { type: at, hour: 7 }
+        ops:
+          - { type: load, commodity: oranges, count: 1 }
+      - station: bath
+        ops:
+          - { type: deliver, order: O1 }
+reference_plan:
+  engines:
+    E1:
+      - station: avon
+      - station: dansville
+        ops:
+          - { type: couple, kind: boxcar, count: 2 }
+      - station: corning
+        depart: { type: at, hour: 5 }
+        ops:
+          - { type: load, commodity: oranges, count: 2 }
+          - { type: uncouple, kind: boxcar, load: { type: loaded, commodity: oranges }, count: 1 }
+      - station: bath
+        ops:
+          - { type: deliver, order: O1 }
+    E2:
+      - station: elmira
+      - station: corning
+        depart: { type: after, engine: E1, plus_hours: 1 }
+        ops:
+          - { type: couple, kind: tanker, count: 1 }
+          - { type: couple, kind: boxcar, load: { type: loaded, commodity: oranges }, count: 1 }
+      - station: elmira
+        depart: { type: at, hour: 8 }
+        ops:
+          - { type: process, count: 1 }
+      - station: corning
+      - station: dansville
+      - station: avon
+        ops:
+          - { type: deliver, order: O2 }
+    E3:
+      - station: elmira

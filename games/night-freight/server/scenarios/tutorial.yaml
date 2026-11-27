@@ -1,0 +1,49 @@
+# One engine, one order, one boxcar, no trap. The boxcar and the oranges are
+# both at Corning, where the engine starts: couple, load, run to Dansville and
+# deliver. The tutorial only teaches the notes, the Ready button and the film.
+# Its `naive_plan` is not a trap; it is a plan that forgets to load, which the
+# tests use to exercise a failed run.
+id: tutorial
+title: Oranges for Dansville
+summary: One engine, one boxcar and one order. Load the oranges and take them to Dansville.
+start_hour: 0
+stations:
+  - { id: avon, name: Avon, stock: [bananas] }
+  - { id: bath, name: Bath }
+  - { id: corning, name: Corning, stock: [oranges] }
+  - { id: dansville, name: Dansville }
+  - { id: elmira, name: Elmira, factory: { input: oranges, output: juice, hours: 1 } }
+edges:
+  - { a: avon, b: dansville, hours: 3 }
+  - { a: avon, b: bath, hours: 4 }
+  - { a: dansville, b: corning, hours: 1 }
+  - { a: bath, b: corning, hours: 2 }
+  - { a: corning, b: elmira, hours: 2 }
+durations: { load: 1, deliver: 0 }
+engines:
+  - { id: E1, station: corning, capacity: 3 }
+cars:
+  - { id: 1, kind: boxcar, at: corning }
+orders:
+  - { id: O1, commodity: oranges, count: 1, to: dansville, deadline: 5 }
+restrictions: []
+disruptions: []
+naive_plan:
+  engines:
+    E1:
+      - station: corning
+        ops:
+          - { type: couple, kind: boxcar, count: 1 }
+      - station: dansville
+        ops:
+          - { type: deliver, order: O1 }
+reference_plan:
+  engines:
+    E1:
+      - station: corning
+        ops:
+          - { type: couple, kind: boxcar, count: 1 }
+          - { type: load, commodity: oranges, count: 1 }
+      - station: dansville
+        ops:
+          - { type: deliver, order: O1 }

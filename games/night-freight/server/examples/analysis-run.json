@@ -1,0 +1,168 @@
+{
+  "act": 1,
+  "actual": {
+    "end_hour": 2,
+    "orders_met": 1,
+    "orders_total": 1,
+    "success": true
+  },
+  "agreement": 0.4,
+  "disruption": null,
+  "divergence_freight": null,
+  "divergence_routing": {
+    "actual": {
+      "hour": 0,
+      "kind": {
+        "cars": [
+          1
+        ],
+        "engine": "E1",
+        "index": 0,
+        "op": {
+          "count": 1,
+          "kind": "boxcar",
+          "load": {
+            "type": "any"
+          },
+          "type": "couple"
+        },
+        "station": "corning",
+        "stop": 0,
+        "type": "op_done"
+      }
+    },
+    "engine": "E1",
+    "expected": {
+      "hour": 0,
+      "kind": {
+        "arrive_hour": 1,
+        "engine": "E1",
+        "from": "corning",
+        "stop": 0,
+        "to": "dansville",
+        "type": "depart"
+      }
+    },
+    "hour": 0
+  },
+  "expected_freight": {
+    "end_hour": 2,
+    "orders_met": 1,
+    "orders_total": 1,
+    "success": true
+  },
+  "expected_routing": {
+    "end_hour": 5,
+    "orders_met": 0,
+    "orders_total": 1,
+    "success": false
+  },
+  "freight_notes": {
+    "engines": {
+      "E1": [
+        {
+          "depart": {
+            "type": "immediately"
+          },
+          "heard_arrival": null,
+          "ops": [
+            {
+              "count": 1,
+              "kind": "boxcar",
+              "load": {
+                "type": "any"
+              },
+              "type": "couple"
+            },
+            {
+              "commodity": "oranges",
+              "count": 1,
+              "type": "load"
+            }
+          ],
+          "station": "corning"
+        },
+        {
+          "depart": {
+            "type": "immediately"
+          },
+          "heard_arrival": null,
+          "ops": [
+            {
+              "order": "O1",
+              "type": "deliver"
+            }
+          ],
+          "station": "dansville"
+        }
+      ]
+    }
+  },
+  "interrupted_at": null,
+  "merged": {
+    "engines": {
+      "E1": [
+        {
+          "depart": {
+            "type": "immediately"
+          },
+          "heard_arrival": null,
+          "ops": [
+            {
+              "count": 1,
+              "kind": "boxcar",
+              "load": {
+                "type": "any"
+              },
+              "type": "couple"
+            },
+            {
+              "commodity": "oranges",
+              "count": 1,
+              "type": "load"
+            }
+          ],
+          "station": "corning"
+        },
+        {
+          "depart": {
+            "type": "immediately"
+          },
+          "heard_arrival": null,
+          "ops": [
+            {
+              "order": "O1",
+              "type": "deliver"
+            }
+          ],
+          "station": "dansville"
+        }
+      ]
+    }
+  },
+  "number": 1,
+  "routing_notes": {
+    "engines": {
+      "E1": [
+        {
+          "depart": {
+            "type": "immediately"
+          },
+          "heard_arrival": null,
+          "ops": [],
+          "station": "corning"
+        },
+        {
+          "depart": {
+            "type": "immediately"
+          },
+          "heard_arrival": 2,
+          "ops": [],
+          "station": "dansville"
+        }
+      ]
+    }
+  },
+  "type": "run",
+  "unreached": []
+}

@@ -1,0 +1,145 @@
+# Bananas for Bath. Traps: the track between Avon and Bath is closed for
+# maintenance from hour 5 to hour 9 (only Routing knows), loading bananas takes
+# two hours (only Freight knows), and two trains that share the single track
+# between Avon and Dansville must be sequenced: if E2 leaves Avon as soon as
+# its bananas are on board, it holds E1 on the same track. Engines wait for
+# their ops, so a departure hour is needed only to sequence the trains. E3 is
+# a spare engine at Corning.
+id: bath-bananas
+title: Bananas for Bath
+summary: Two car loads of bananas to Bath by noon, one to Corning by one.
+start_hour: 0
+stations:
+  - { id: avon, name: Avon, stock: [bananas] }
+  - { id: bath, name: Bath }
+  - { id: corning, name: Corning, stock: [oranges] }
+  - { id: dansville, name: Dansville }
+  - { id: elmira, name: Elmira, factory: { input: oranges, output: juice, hours: 1 } }
+edges:
+  - { a: avon, b: dansville, hours: 3 }
+  - { a: avon, b: bath, hours: 4 }
+  - { a: dansville, b: corning, hours: 1 }
+  - { a: bath, b: corning, hours: 2 }
+  - { a: corning, b: elmira, hours: 2 }
+durations: { load: 2, deliver: 0 }
+engines:
+  - { id: E1, station: bath, capacity: 2 }
+  - { id: E2, station: dansville, capacity: 2 }
+  - { id: E3, station: corning, capacity: 2 }
+cars:
+  - { id: 1, kind: boxcar, at: bath }
+  - { id: 2, kind: boxcar, at: bath }
+  - { id: 3, kind: boxcar, at: dansville }
+  - { id: 4, kind: boxcar, at: corning }
+orders:
+  - { id: O1, commodity: bananas, count: 2, to: bath, deadline: 12 }
+  - { id: O2, commodity: bananas, count: 1, to: corning, deadline: 13 }
+restrictions:
+  - { a: avon, b: bath, from_hour: 5, until_hour: 9 }
+disruptions:
+  - id: loaded-engine-fails
+    hour: 10
+    effect: { kind: engine_failure, selector: most_loaded_engine }
+    recovery:
+      engines:
+        E1:
+          - station: corning
+            ops:
+              - { type: uncouple, kind: boxcar, load: { type: loaded, commodity: bananas }, count: 2 }
+        E2:
+          - station: dansville
+          - station: corning
+            ops:
+              - { type: deliver, order: O2 }
+        E3:
+          - station: corning
+            ops:
+              - { type: couple, kind: boxcar, load: { type: loaded, commodity: bananas }, count: 2 }
+          - station: bath
+            ops:
+              - { type: deliver, order: O1 }
+  - id: late-oranges
+    hour: 8
+    effect:
+      kind: late_order
+      order: { id: O3, commodity: oranges, count: 1, to: avon, deadline: 15 }
+    recovery:
+      engines:
+        E1:
+          - station: dansville
+          - station: corning
+          - station: bath
+            ops:
+              - { type: deliver, order: O1 }
+        E2:
+          - station: avon
+            depart: { type: at, hour: 9 }
+          - station: dansville
+          - station: corning
+            ops:
+              - { type: deliver, order: O2 }
+        E3:
+          - station: corning
+            ops:
+              - { type: couple, kind: boxcar, count: 1 }
+              - { type: load, commodity: oranges, count: 1 }
+            depart: { type: at, hour: 10 }
+          - station: dansville
+            depart: { type: at, hour: 12 }
+          - station: avon
+            ops:
+              - { type: deliver, order: O3 }
+naive_plan:
+  engines:
+    E1:
+      - station: bath
+        ops:
+          - { type: couple, kind: boxcar, count: 2 }
+      - station: avon
+        depart: { type: at, hour: 6 }
+        ops:
+          - { type: load, commodity: bananas, count: 2 }
+      - station: bath
+        ops:
+          - { type: deliver, order: O1 }
+    E2:
+      - station: dansville
+        ops:
+          - { type: couple, kind: boxcar, count: 1 }
+      - station: avon
+        depart: { type: at, hour: 5 }
+        ops:
+          - { type: load, commodity: bananas, count: 1 }
+      - station: dansville
+      - station: corning
+        ops:
+          - { type: deliver, order: O2 }
+reference_plan:
+  engines:
+    E1:
+      - station: bath
+        ops:
+          - { type: couple, kind: boxcar, count: 2 }
+      - station: avon
+        depart: { type: at, hour: 6 }
+        ops:
+          - { type: load, commodity: bananas, count: 2 }
+      - station: dansville
+      - station: corning
+      - station: bath
+        ops:
+          - { type: deliver, order: O1 }
+    E2:
+      - station: dansville
+        ops:
+          - { type: couple, kind: boxcar, count: 1 }
+      - station: avon
+        depart: { type: at, hour: 9 }
+        ops:
+          - { type: load, commodity: bananas, count: 1 }
+      - station: dansville
+      - station: corning
+        ops:
+          - { type: deliver, order: O2 }
+    E3:
+      - station: corning

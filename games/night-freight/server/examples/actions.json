@@ -1,0 +1,166 @@
+{
+  "continue": {
+    "type": "continue"
+  },
+  "edit_append_stop": {
+    "edit": {
+      "engine": "E1",
+      "station": "dansville",
+      "type": "append_stop"
+    },
+    "type": "edit"
+  },
+  "edit_clear_heard_arrival": {
+    "edit": {
+      "engine": "E1",
+      "hour": null,
+      "stop": 1,
+      "type": "set_heard_arrival"
+    },
+    "type": "edit"
+  },
+  "edit_insert_couple": {
+    "edit": {
+      "engine": "E1",
+      "index": 0,
+      "op": {
+        "count": 2,
+        "kind": "boxcar",
+        "load": {
+          "type": "any"
+        },
+        "type": "couple"
+      },
+      "stop": 1,
+      "type": "insert_op"
+    },
+    "type": "edit"
+  },
+  "edit_insert_deliver": {
+    "edit": {
+      "engine": "E1",
+      "index": 0,
+      "op": {
+        "order": "O1",
+        "type": "deliver"
+      },
+      "stop": 3,
+      "type": "insert_op"
+    },
+    "type": "edit"
+  },
+  "edit_insert_load": {
+    "edit": {
+      "engine": "E1",
+      "index": 0,
+      "op": {
+        "commodity": "oranges",
+        "count": 2,
+        "type": "load"
+      },
+      "stop": 2,
+      "type": "insert_op"
+    },
+    "type": "edit"
+  },
+  "edit_insert_process": {
+    "edit": {
+      "engine": "E2",
+      "index": 0,
+      "op": {
+        "count": 1,
+        "type": "process"
+      },
+      "stop": 2,
+      "type": "insert_op"
+    },
+    "type": "edit"
+  },
+  "edit_insert_uncouple_loaded": {
+    "edit": {
+      "engine": "E1",
+      "index": 1,
+      "op": {
+        "count": 1,
+        "kind": "boxcar",
+        "load": {
+          "commodity": "oranges",
+          "type": "loaded"
+        },
+        "type": "uncouple"
+      },
+      "stop": 2,
+      "type": "insert_op"
+    },
+    "type": "edit"
+  },
+  "edit_remove_op": {
+    "edit": {
+      "engine": "E1",
+      "index": 0,
+      "stop": 2,
+      "type": "remove_op"
+    },
+    "type": "edit"
+  },
+  "edit_set_depart_after": {
+    "edit": {
+      "depart": {
+        "engine": "E1",
+        "plus_hours": 1,
+        "type": "after"
+      },
+      "engine": "E2",
+      "stop": 1,
+      "type": "set_depart"
+    },
+    "type": "edit"
+  },
+  "edit_set_depart_at": {
+    "edit": {
+      "depart": {
+        "hour": 5,
+        "type": "at"
+      },
+      "engine": "E1",
+      "stop": 0,
+      "type": "set_depart"
+    },
+    "type": "edit"
+  },
+  "edit_set_depart_immediately": {
+    "edit": {
+      "depart": {
+        "type": "immediately"
+      },
+      "engine": "E2",
+      "stop": 1,
+      "type": "set_depart"
+    },
+    "type": "edit"
+  },
+  "edit_set_heard_arrival": {
+    "edit": {
+      "engine": "E1",
+      "hour": 3,
+      "stop": 1,
+      "type": "set_heard_arrival"
+    },
+    "type": "edit"
+  },
+  "edit_truncate_stops": {
+    "edit": {
+      "engine": "E1",
+      "from": 2,
+      "type": "truncate_stops"
+    },
+    "type": "edit"
+  },
+  "replay_finished": {
+    "type": "replay_finished"
+  },
+  "set_ready": {
+    "ready": true,
+    "type": "set_ready"
+  }
+}

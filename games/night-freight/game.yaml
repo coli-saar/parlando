@@ -1,0 +1,8 @@
+id: night-freight-v2
+name: Night Freight
+version: 0.1.5
+cargo_manifest: server/Cargo.toml
+component: game.wasm
+scenarios: scenarios.yaml
+client_project: client/web
+client_dist: client/web/dist
